@@ -50,5 +50,5 @@ return [
     'add_conflict_reservation' => 'Thời gian nghỉ đã xung đột với thời gian nghỉ trước đó. Hãy kiểm tra lại',
     'time_in_past' => 'Thời gian này đã ở quá khứ, hãy chọn lại.',
     'doctor_required' => 'Vui lòng chọn bác sĩ trước khi đặt lịch.',
- 
+    'customer_busy' => 'Số điện thoại này đã có lịch khám trùng khung giờ này. Vui lòng chọn giờ khác hoặc hủy lịch cũ.'
 ];
