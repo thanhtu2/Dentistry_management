@@ -1,5 +1,6 @@
 @extends('user.layout')
 @section('user_content')
+    <!-- Home page interface -->
 
     <!-- Full Screen Search Start -->
     <div class="modal fade" id="reservationModel" tabindex="-1">
