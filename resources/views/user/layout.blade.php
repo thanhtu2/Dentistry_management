@@ -499,6 +499,7 @@
                 src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAdu4k2cYIHbds3Y4mTLHHIMURBWS4QiII&callback=initMap&libraries=&v=weekly" async></script>
 
 <!-- AI CHATBOX START -->
+<!-- Update frontend and chatbot interface -->
 
 <style>
     #ai-chat-button {
