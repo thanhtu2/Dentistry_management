@@ -1,5 +1,6 @@
 @extends('user.layout')
 @section('user_content')
+    <!-- Home page interface -->
 
     <!-- Full Screen Search Start -->
     <div class="modal fade" id="reservationModel" tabindex="-1">
@@ -10,7 +11,7 @@
                 </div>
                 <form class="modal-body d-flex align-items-center justify-content-center" method="get" action="{{ URL::to(route('reservation')) }}">
                     <div class="input-group" style="max-width: 600px;">
-                        <input type="number" required style="background-color: white!important;" name="phone" class="form-control bg-transparent border-primary p-3" placeholder="Nhập số điện thoại của bạn">
+                        <input type="number" required style="background-color: white!important;" name="phone" class="form-control bg-transparent border-primary p-3" aria-label="Nhập số điện thoại" placeholder="Nhập số điện thoại của bạn">
                         <button type="submit" class="btn btn-primary px-4"><i class="bi bi-search"></i></button>
                     </div>
                 </form>

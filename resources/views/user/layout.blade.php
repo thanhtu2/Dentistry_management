@@ -151,6 +151,23 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.10.0/css/all.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.4.1/font/bootstrap-icons.css" rel="stylesheet">
 
+    <!-- Lịch chọn ngày khám (làm mờ ngày bác sĩ nghỉ) -->
+    <link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/vn.js"></script>
+    <style>
+        /* Ngày bác sĩ nghỉ: mờ, không chọn được */
+        .flatpickr-day.flatpickr-disabled,
+        .flatpickr-day.flatpickr-disabled:hover {
+            color: rgba(57, 57, 57, 0.25);
+            text-decoration: line-through;
+            cursor: not-allowed;
+        }
+        .flatpickr-calendar {
+            z-index: 100000;
+        }
+    </style>
+
     <!-- Libraries Stylesheet -->
     <link href="{{ asset('lib/lib/owlcarousel/assets/owl.carousel.min.css') }}" rel="stylesheet">
     <link href="{{ asset('lib/lib/animate/animate.min.css') }}" rel="stylesheet">
@@ -160,6 +177,8 @@
 
     <!-- Template Stylesheet -->
     <link href="{{ asset('lib/css/style.css') }}" rel="stylesheet">
+
+    @include('partials.image_fallback')
 </head>
 
 <body>
@@ -297,7 +316,7 @@
                             </div>
                             <div class="d-flex mb-2">
                                 <i class="bi bi-geo-alt text-primary me-2"></i>
-                                <p class="mb-0">450 Lê Văn Việt Quận 9</p>
+                                <p class="mb-0">02 Võ Oanh, Phường Bình Thạnh, TP.HCM</p>
                             </div>
                             <div class="d-flex mb-2">
                                 <i class="bi bi-envelope-open text-primary me-2"></i>
@@ -355,7 +374,7 @@
 {{--                    <ul class="list-unstyled text-light footer-link-list">--}}
 {{--                        <li>--}}
 {{--                            <i class="fas fa-map-marker-alt fa-fw"></i>--}}
-{{--                            450 Lê Văn Việt TP Thủ Đức--}}
+{{--                            02 Võ Oanh, Phường Bình Thạnh, TP.HCM--}}
 {{--                        </li>--}}
 {{--                        <li>--}}
 {{--                            <i class="fa fa-phone fa-fw"></i>--}}
@@ -495,8 +514,6 @@
         }, '#paypal-button');
     </script>
 
-        <script
-                src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAdu4k2cYIHbds3Y4mTLHHIMURBWS4QiII&callback=initMap&libraries=&v=weekly" async></script>
 
 <!-- AI CHATBOX START -->
 
@@ -633,6 +650,7 @@
         <input
             id="ai-message"
             type="text"
+            maxlength="500"
             placeholder="Nhập câu hỏi..."
         >
 
@@ -680,6 +698,8 @@
     let bookingDoctorName = '';
     let bookingDate = '';
     let bookingTime = '';
+    // doctor_id => [1..7] ngày làm việc trong tuần (1 = Thứ 2, 7 = Chủ nhật), null = làm mọi ngày
+    let bookingDoctorWorkingDays = {};
 
     let purchaseStep = 0;
     let purchaseProductId = null;
@@ -691,6 +711,11 @@
     let purchaseAddress = '';
     let cancelOrderStep = 0;
     let cancelOrderCode = '';
+
+    // Xem / hủy lịch khám: khách chưa đăng nhập tra cứu bằng số điện thoại
+    const chatIsLoggedIn = {{ Auth::check() ? 'true' : 'false' }};
+    let reservationLookupMode = '';   // '' | 'check' | 'cancel' (đang chờ nhập số điện thoại)
+    let reservationPhone = '';
 
     function sendAIMessage() {
 
@@ -709,6 +734,23 @@
 
     input.value = '';
     chatContent.scrollTop = chatContent.scrollHeight;
+
+// =====================================================
+// XEM / HỦY LỊCH KHÁM - KHÁCH NHẬP SỐ ĐIỆN THOẠI
+// =====================================================
+
+if (reservationLookupMode !== '') {
+
+    const mode = reservationLookupMode;
+    reservationLookupMode = '';
+
+    // Không giống số điện thoại -> coi như câu hỏi bình thường
+    if (message.replace(/\D/g, '').length >= 9) {
+        reservationPhone = message;
+        fetchChatReservations(mode);
+        return;
+    }
+}
 
 // =====================================================
 // HỦY ĐƠN - NHẬP MÃ ĐƠN HÀNG
@@ -905,9 +947,9 @@ if (purchaseStep === 2) {
 
 if (purchaseStep === 3) {
 
-    const phone = message.replace(/\D/g, '');
+    const phone = normalizeChatPhone(message);
 
-    if (!/^0\d{9}$/.test(phone)) {
+    if (!phone) {
 
         chatContent.innerHTML += `
             <div class="ai-message">
@@ -950,41 +992,87 @@ if (purchaseStep === 3) {
 
 if (purchaseStep === 4) {
 
+    const email = message.trim();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    if (!emailRegex.test(message)) {
+    const showEmailError = (text) => {
+        chatContent.innerHTML += `
+            <div class="ai-message">
+                ${escapeHtml(text)}<br>
+                Bạn vui lòng nhập lại email.
+            </div>
+        `;
+        chatContent.scrollTop = chatContent.scrollHeight;
+    };
+
+    if (!emailRegex.test(email)) {
+        showEmailError('Email chưa đúng định dạng. Ví dụ: abc@gmail.com');
+        return;
+    }
+
+    chatContent.innerHTML += `
+        <div class="ai-message" id="email-check-loading">
+            ⏳ Đang kiểm tra email...
+        </div>
+    `;
+    chatContent.scrollTop = chatContent.scrollHeight;
+
+    // Server kiểm tra tên miền có thật và phát hiện gõ nhầm (vd: gma.com)
+    fetch('{{ route("ai_chat_validate_email") }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+        body: JSON.stringify({ email: email })
+    })
+
+    .then(response => response.json())
+
+    .then(res => {
+
+        const loading = document.getElementById('email-check-loading');
+        if (loading) {
+            loading.remove();
+        }
+
+        if (res.status !== true) {
+            showEmailError(res.message || 'Email không hợp lệ.');
+            return;
+        }
+
+        purchaseEmail = email;
+        purchaseStep = 5;
+
+        saveChatHistory(
+            purchaseEmail,
+            'Đã ghi nhận email. Vui lòng nhập địa chỉ nhận hàng.'
+        );
 
         chatContent.innerHTML += `
             <div class="ai-message">
-                Email chưa hợp lệ.<br>
-                Bạn vui lòng nhập lại.<br>
-                Ví dụ: <strong>abc@gmail.com</strong>
+                Đã ghi nhận email
+                <strong>${escapeHtml(purchaseEmail)}</strong>.<br><br>
+
+                Bạn vui lòng nhập
+                <strong>địa chỉ nhận hàng</strong>.
             </div>
         `;
 
         chatContent.scrollTop = chatContent.scrollHeight;
-        return;
-    }
+    })
 
-    purchaseEmail = message;
-    purchaseStep = 5;
+    .catch(() => {
 
-    saveChatHistory(
-    purchaseEmail,
-    'Đã ghi nhận email. Vui lòng nhập địa chỉ nhận hàng.'
-);
+        const loading = document.getElementById('email-check-loading');
+        if (loading) {
+            loading.remove();
+        }
 
-    chatContent.innerHTML += `
-        <div class="ai-message">
-            Đã ghi nhận email
-            <strong>${escapeHtml(purchaseEmail)}</strong>.<br><br>
+        showEmailError('Không kiểm tra được email lúc này.');
+    });
 
-            Bạn vui lòng nhập
-            <strong>địa chỉ nhận hàng</strong>.
-        </div>
-    `;
-
-    chatContent.scrollTop = chatContent.scrollHeight;
     return;
 }
 
@@ -1086,11 +1174,10 @@ if (purchaseStep === 6) {
     // =========================================
     if (bookingStep === 2) {
 
-    // Xóa khoảng trắng, dấu chấm, dấu gạch...
-    const phone = message.replace(/\D/g, '');
+    // Kiểm tra SĐT Việt Nam: đúng 10 chữ số, bắt đầu bằng 0
+    const phone = normalizeChatPhone(message);
 
-    // Kiểm tra SĐT Việt Nam
-    if (!/^0\d{9}$/.test(phone)) {
+    if (!phone) {
 
         chatContent.innerHTML += `
             <div class="ai-message">
@@ -1185,6 +1272,7 @@ if (bookingStep === 3) {
 
         headers: {
             'Content-Type': 'application/json',
+            'Accept': 'application/json',
             'X-CSRF-TOKEN': '{{ csrf_token() }}'
         },
 
@@ -1205,192 +1293,37 @@ if (bookingStep === 3) {
             loading.remove();
         }
 
+        // Server từ chối tin nhắn (rỗng / quá dài...) -> báo rõ thay vì hiện ô trống
+        if (data.errors) {
+            chatContent.innerHTML += `
+                <div class="ai-message">
+                    Tin nhắn chưa hợp lệ hoặc quá dài. Bạn vui lòng nhập ngắn gọn hơn nhé.
+                </div>
+            `;
+            chatContent.scrollTop = chatContent.scrollHeight;
+            return;
+        }
+
  if (data.check_reservation === true) {
 
-    chatContent.innerHTML += `
-        <div class="ai-message" id="check-reservation-loading">
-            ⏳ Đang kiểm tra lịch khám của bạn...
-        </div>
-    `;
+    // Khách nhắn thẳng số điện thoại -> tra cứu luôn
+    if (data.phone) {
+        reservationPhone = data.phone;
+        fetchChatReservations('check');
+        return;
+    }
 
-    chatContent.scrollTop = chatContent.scrollHeight;
-
-    fetch('{{ route("ai_chat_check_reservation") }}', {
-        method: 'POST',
-
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': '{{ csrf_token() }}'
-        },
-
-        body: JSON.stringify({})
-    })
-
-    .then(response => response.json())
-
-    .then(res => {
-
-        const loading =
-            document.getElementById('check-reservation-loading');
-
-        if (loading) {
-            loading.remove();
-        }
-
-        if (res.status === true) {
-            let historyAnswer = 'Lịch khám sắp tới của bạn:\n';
-
-            res.reservations.forEach(reservation => {
-
-        historyAnswer +=
-        'Dịch vụ: ' + (reservation.service ? reservation.service.name : '') + '\n'
-        + 'Bác sĩ: ' + (reservation.doctor ? reservation.doctor.name : '') + '\n'
-        + 'Ngày: ' + reservation.date + '\n'
-        + 'Giờ: ' + reservation.time + '\n'
-        + 'Trạng thái: '
-        + (reservation.status == 0 ? 'Chờ xác nhận' : 'Đã xác nhận')
-        + '\n\n';
-});
-
-           saveChatHistory(
-           'Xem lịch khám của tôi',
-            historyAnswer
-            );
-
-            let reservationHtml = `
-                <div class="ai-message">
-                    📅 <strong>Lịch khám sắp tới của bạn:</strong><br><br>
-            `;
-
-            res.reservations.forEach(reservation => {
-
-                reservationHtml += `
-                    Dịch vụ:
-                    <strong>${escapeHtml(reservation.service ? reservation.service.name : '')}</strong><br>
-
-                    Bác sĩ:
-                    <strong>${escapeHtml(reservation.doctor ? reservation.doctor.name : '')}</strong><br>
-
-                    Ngày:
-                    <strong>${escapeHtml(reservation.date)}</strong><br>
-
-                    Giờ:
-                    <strong>${escapeHtml(reservation.time)}</strong><br>
-
-                    Trạng thái:
-                    <strong>
-                        ${reservation.status == 0
-                            ? 'Chờ xác nhận'
-                            : 'Đã xác nhận'}
-                    </strong><br><br>
-                `;
-            });
-
-            reservationHtml += `</div>`;
-
-            chatContent.innerHTML += reservationHtml;
-
-        } else {
-            saveChatHistory(
-           'Xem lịch khám của tôi',
-            res.message
-        );
-
-            chatContent.innerHTML += `
-                <div class="ai-message">
-                    ${escapeHtml(res.message)}
-                </div>
-            `;
-        }
-
-        chatContent.scrollTop = chatContent.scrollHeight;
-    });
-
+    startReservationLookup('check');
     return;
-}       
-
+}
 
 if (data.cancel_reservation === true) {
+    startReservationLookup('cancel');
+    return;
+}
 
-    chatContent.innerHTML += `
-        <div class="ai-message" id="cancel-reservation-loading">
-            ⏳ Đang kiểm tra lịch khám của bạn...
-        </div>
-    `;
-
-    chatContent.scrollTop = chatContent.scrollHeight;
-
-    fetch('{{ route("ai_chat_check_reservation") }}', {
-        method: 'POST',
-
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': '{{ csrf_token() }}'
-        },
-
-        body: JSON.stringify({})
-    })
-
-    .then(response => response.json())
-
-    .then(res => {
-
-        const loading =
-            document.getElementById('cancel-reservation-loading');
-
-        if (loading) {
-            loading.remove();
-        }
-
-        if (res.status === true) {
-
-            let reservationHtml = `
-                <div class="ai-message">
-                    📅 <strong>Các lịch khám có thể hủy:</strong><br><br>
-            `;
-
-            res.reservations.forEach(reservation => {
-
-                reservationHtml += `
-                    Dịch vụ:
-                    <strong>${escapeHtml(reservation.service ? reservation.service.name : '')}</strong><br>
-
-                    Bác sĩ:
-                    <strong>${escapeHtml(reservation.doctor ? reservation.doctor.name : '')}</strong><br>
-
-                    Ngày:
-                    <strong>${escapeHtml(reservation.date)}</strong><br>
-
-                    Giờ:
-                    <strong>${escapeHtml(reservation.time)}</strong><br><br>
-
-                    <button type="button"
-                            class="ai-booking-button"
-                            style="margin-bottom: 12px;"
-                            onclick="selectCancelReservation(${reservation.id})">
-                        ❌ Hủy lịch này
-                    </button>
-
-                    <br>
-                `;
-            });
-
-            reservationHtml += `</div>`;
-
-            chatContent.innerHTML += reservationHtml;
-
-        } else {
-
-            chatContent.innerHTML += `
-                <div class="ai-message">
-                    ${escapeHtml(res.message)}
-                </div>
-            `;
-        }
-
-        chatContent.scrollTop = chatContent.scrollHeight;
-    });
-
+if (data.check_order === true) {
+    fetchChatOrders();
     return;
 }
 
@@ -1447,26 +1380,34 @@ if (data.cancel_order === true) {
 
         if (res.status === true) {
 
+            const serviceSelectId = 'booking-service-select-' + Date.now();
+
+            let serviceOptions = `<option value="" disabled selected>-- Chọn dịch vụ khám --</option>`;
+
+            res.services.forEach(service => {
+                serviceOptions += `<option value="${service.id}" data-name="${escapeHtml(service.name)}">${escapeHtml(service.name)}</option>`;
+            });
+
             let serviceHtml = `
                 <div class="ai-message">
                     Dạ được ạ! 😊<br><br>
-                    Bạn vui lòng chọn
-                    <strong>dịch vụ muốn khám</strong>:<br><br>
-            `;
+                    🦷 Vui lòng chọn <strong>dịch vụ muốn khám</strong>
+                    (có <strong>${res.services.length}</strong> dịch vụ):<br><br>
 
-            res.services.forEach(service => {
+                    <select id="${serviceSelectId}"
+                            style="padding: 7px; margin-bottom: 8px; min-width: 170px; max-width: 100%;">
+                        ${serviceOptions}
+                    </select>
 
-                serviceHtml += `
+                    <br>
+
                     <button type="button"
                             class="ai-booking-button"
-                            style="margin: 4px;"
-                            onclick="selectBookingService(${service.id}, '${escapeHtml(service.name)}')">
-                        ${escapeHtml(service.name)}
+                            onclick="confirmBookingService('${serviceSelectId}')">
+                        Tiếp tục
                     </button>
-                `;
-            });
-
-            serviceHtml += `</div>`;
+                </div>
+            `;
 
             chatContent.innerHTML += serviceHtml;
 
@@ -1475,15 +1416,64 @@ if (data.cancel_order === true) {
             chatContent.innerHTML += `
                 <div class="ai-message">
                     ${escapeHtml(res.message)}
+                    ${res.login_url ? `<br><br><a href="${escapeHtml(res.login_url)}" class="ai-booking-button" style="display: inline-block; text-decoration: none;">Đăng nhập</a>` : ''}
                 </div>
             `;
         }
+
+        chatContent.scrollTop = chatContent.scrollHeight;
+    })
+
+    .catch(() => {
+
+        const loading =
+            document.getElementById('booking-service-loading');
+
+        if (loading) {
+            loading.remove();
+        }
+
+        chatContent.innerHTML += `
+            <div class="ai-message">
+                Không thể lấy danh sách dịch vụ. Vui lòng thử lại sau.
+            </div>
+        `;
 
         chatContent.scrollTop = chatContent.scrollHeight;
     });
 
     return;
 }
+        // =========================================
+// KHÁCH MUỐN MUA NHƯNG CHƯA ĐĂNG NHẬP
+// =========================================
+if (data.login_required === true) {
+
+    purchaseStep = 0;
+
+    chatContent.innerHTML += `
+        <div class="ai-message">
+            🔒 ${formatAIText(data.answer)}
+            <br><br>
+            <a href="${escapeHtml(data.login_url)}"
+               class="ai-booking-button"
+               style="display: inline-block; text-decoration: none; margin: 4px;">
+                Đăng nhập
+            </a>
+            ${data.product_url ? `
+            <a href="${escapeHtml(data.product_url)}"
+               class="ai-booking-button"
+               style="display: inline-block; text-decoration: none; margin: 4px;">
+                Xem sản phẩm
+            </a>` : ''}
+        </div>
+    `;
+
+    chatContent.scrollTop = chatContent.scrollHeight;
+
+    return;
+}
+
         // =========================================
 // NẾU KHÁCH MUỐN MUA SẢN PHẨM
 // =========================================
@@ -1710,6 +1700,152 @@ function confirmChatOrder() {
 // XÁC NHẬN HỦY ĐƠN HÀNG
 // =====================================================
 
+function fetchChatOrders() {
+
+    chatContent.innerHTML += `
+        <div class="ai-message" id="my-orders-loading">
+            ⏳ Đang kiểm tra đơn hàng của bạn...
+        </div>
+    `;
+
+    chatContent.scrollTop = chatContent.scrollHeight;
+
+    fetch('{{ route("ai_chat_my_orders") }}', {
+        method: 'POST',
+
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+
+        body: JSON.stringify({})
+    })
+
+    .then(response => response.json())
+
+    .then(res => {
+
+        const loading = document.getElementById('my-orders-loading');
+
+        if (loading) {
+            loading.remove();
+        }
+
+        if (res.status !== true) {
+
+            saveChatHistory('Xem đơn hàng của tôi', res.message);
+
+            chatContent.innerHTML += `
+                <div class="ai-message">
+                    ${res.login_required ? '🔒 ' : ''}${escapeHtml(res.message)}
+                    ${res.login_url ? `<br><br><a href="${escapeHtml(res.login_url)}" class="ai-booking-button" style="display: inline-block; text-decoration: none;">Đăng nhập</a>` : ''}
+                </div>
+            `;
+
+            chatContent.scrollTop = chatContent.scrollHeight;
+            return;
+        }
+
+        let historyAnswer = 'Đơn hàng của bạn:\n';
+        let orderHtml = `
+            <div class="ai-message">
+                📦 <strong>Đơn hàng gần đây của bạn:</strong><br><br>
+        `;
+
+        res.orders.forEach(order => {
+
+            const items = order.items
+                .map(item => escapeHtml(item.name) + ' x' + item.quantity)
+                .join('<br>');
+
+            historyAnswer +=
+                'Mã: ' + order.code_invoice
+                + ' | Ngày: ' + order.created_at
+                + ' | Trạng thái: ' + order.status_ship
+                + ' | Tổng: ' + Number(order.need_pay).toLocaleString('vi-VN') + 'đ\n';
+
+            orderHtml += `
+                Mã đơn:
+                <strong>${escapeHtml(order.code_invoice)}</strong>
+                ${order.via_chat ? '<small>(đặt qua chatbox)</small>' : ''}<br>
+
+                Ngày đặt:
+                <strong>${escapeHtml(order.created_at || '')}</strong><br>
+
+                Sản phẩm:<br>
+                <strong>${items}</strong><br>
+
+                Tổng thanh toán:
+                <strong>${Number(order.need_pay).toLocaleString('vi-VN')}đ</strong>
+                (${order.is_pay_cod ? 'COD' : 'Online'})<br>
+
+                Trạng thái:
+                <strong>${escapeHtml(order.status_ship)}</strong><br>
+            `;
+
+            if (order.can_cancel) {
+                orderHtml += `
+                    <button type="button"
+                            class="ai-booking-button"
+                            style="margin: 6px 0;"
+                            onclick="selectCancelOrderFromList('${escapeHtml(order.code_invoice)}')">
+                        ❌ Hủy đơn này
+                    </button>
+                `;
+            }
+
+            orderHtml += `<br><br>`;
+        });
+
+        orderHtml += `</div>`;
+
+        saveChatHistory('Xem đơn hàng của tôi', historyAnswer);
+
+        chatContent.innerHTML += orderHtml;
+        chatContent.scrollTop = chatContent.scrollHeight;
+    })
+
+    .catch(() => {
+
+        const loading = document.getElementById('my-orders-loading');
+
+        if (loading) {
+            loading.remove();
+        }
+
+        chatContent.innerHTML += `
+            <div class="ai-message">
+                ❌ Không thể kiểm tra đơn hàng. Vui lòng thử lại.
+            </div>
+        `;
+
+        chatContent.scrollTop = chatContent.scrollHeight;
+    });
+}
+
+// Hủy đơn chọn từ danh sách "xem đơn hàng" -> dùng lại bước xác nhận hủy đơn
+function selectCancelOrderFromList(code) {
+
+    cancelOrderCode = code;
+    cancelOrderStep = 2;
+
+    chatContent.innerHTML += `
+        <div class="ai-message">
+            ⚠️ Bạn có chắc chắn muốn hủy đơn hàng
+            <strong>${escapeHtml(code)}</strong> không?<br><br>
+
+            <button type="button"
+                    onclick="confirmCancelOrder()"
+                    class="ai-booking-button">
+                ❌ Xác nhận hủy đơn
+            </button>
+        </div>
+    `;
+
+    chatContent.scrollTop = chatContent.scrollHeight;
+}
+
 function confirmCancelOrder() {
 
     if (cancelOrderStep !== 2) {
@@ -1800,6 +1936,20 @@ function confirmCancelOrder() {
     });
 }
 
+function confirmBookingService(selectId) {
+
+    const serviceSelect = document.getElementById(selectId);
+
+    if (!serviceSelect || !serviceSelect.value) {
+        alert('Vui lòng chọn dịch vụ khám.');
+        return;
+    }
+
+    const option = serviceSelect.options[serviceSelect.selectedIndex];
+
+    selectBookingService(parseInt(serviceSelect.value, 10), option.dataset.name || option.text);
+}
+
 function selectBookingService(id, name) {
 
     bookingServiceId = id;
@@ -1857,6 +2007,8 @@ function selectBookingService(id, name) {
 
             res.doctors.forEach(doctor => {
 
+                bookingDoctorWorkingDays[doctor.id] = doctor.working_days;
+
                 doctorHtml += `
                     <button type="button"
                             class="ai-booking-button"
@@ -1894,8 +2046,8 @@ function selectBookingDoctor(id, name) {
     'Bạn đã chọn bác sĩ ' + name + '. Vui lòng chọn ngày khám.'
 );
 
-    const today = new Date();
-    const minDate = today.toISOString().split('T')[0];
+    // Mỗi lần chọn bác sĩ tạo ô ngày mới (id riêng, tránh trùng khi khách chọn lại)
+    const dateInputId = 'booking-date-input-' + Date.now();
 
     chatContent.innerHTML += `
         <div class="user-message">
@@ -1909,26 +2061,78 @@ function selectBookingDoctor(id, name) {
             📅 Vui lòng chọn ngày khám:<br><br>
 
             <input type="date"
-                   id="booking-date-input"
-                   min="${minDate}"
+                   id="${dateInputId}"
+                   placeholder="Chọn ngày khám"
                    style="padding: 7px; margin-bottom: 8px;">
 
             <br>
 
             <button type="button"
                     class="ai-booking-button"
-                    onclick="confirmBookingDate()">
+                    onclick="confirmBookingDate('${dateInputId}')">
                 Tiếp tục
             </button>
         </div>
     `;
 
     chatContent.scrollTop = chatContent.scrollHeight;
+
+    attachDoctorDatePicker(
+        document.getElementById(dateInputId),
+        () => bookingDoctorWorkingDays[id] ?? null
+    );
 }
 
-function confirmBookingDate() {
+// Gắn lịch chọn ngày: không chọn được ngày đã qua và ngày bác sĩ nghỉ (bị làm mờ).
+// getWorkingDays() trả về mảng [1..7] (1 = Thứ 2, 7 = Chủ nhật) hoặc null = làm mọi ngày.
+function attachDoctorDatePicker(input, getWorkingDays) {
 
-    const dateInput = document.getElementById('booking-date-input');
+    if (!input) {
+        return null;
+    }
+
+    // Không tải được flatpickr (mất mạng CDN) -> dùng ô date mặc định
+    if (typeof flatpickr === 'undefined') {
+        const now = new Date();
+        input.min = now.getFullYear() + '-'
+            + String(now.getMonth() + 1).padStart(2, '0') + '-'
+            + String(now.getDate()).padStart(2, '0');
+        return null;
+    }
+
+    input.type = 'text';
+
+    const picker = flatpickr(input, {
+        locale: 'vn',
+        dateFormat: 'Y-m-d',
+        altInput: true,
+        altFormat: 'd/m/Y',
+        minDate: 'today',
+        disableMobile: true,
+        disable: [
+            function (date) {
+                const workingDays = getWorkingDays();
+                if (!workingDays) {
+                    return false;
+                }
+                const isoDay = date.getDay() === 0 ? 7 : date.getDay();
+                return !workingDays.includes(isoDay);
+            }
+        ]
+    });
+
+    // Ô hiển thị (altInput) giữ placeholder/required của ô gốc
+    if (picker.altInput) {
+        picker.altInput.placeholder = input.getAttribute('placeholder') || 'Chọn ngày';
+        picker.altInput.required = input.required;
+    }
+
+    return picker;
+}
+
+function confirmBookingDate(inputId) {
+
+    const dateInput = document.getElementById(inputId);
 
     if (!dateInput || !dateInput.value) {
         alert('Vui lòng chọn ngày khám.');
@@ -1985,7 +2189,7 @@ function confirmBookingDate() {
 
                 chatContent.innerHTML += `
                     <div class="ai-message">
-                        😥 Bác sĩ không còn giờ trống trong ngày này.<br><br>
+                        😥 ${escapeHtml(res.message || 'Bác sĩ không còn giờ trống trong ngày này.')}<br><br>
                         Vui lòng chọn ngày khác.
                     </div>
                 `;
@@ -1994,26 +2198,34 @@ function confirmBookingDate() {
                 return;
             }
 
-            let timeHtml = `
-                <div class="ai-message">
-                    ⏰ Các giờ còn trống:<br><br>
-            `;
+            // Chỉ liệt kê giờ còn trống (giờ khách khác đã đặt đã bị ẩn ở server)
+            const timeSelectId = 'booking-time-select-' + Date.now();
+
+            let timeOptions = `<option value="" disabled selected>-- Chọn giờ khám --</option>`;
 
             res.free_times.forEach(time => {
-
-                timeHtml += `
-                    <button type="button"
-                            class="ai-booking-button"
-                            style="margin: 4px;"
-                            onclick="selectBookingTime('${escapeHtml(time)}')">
-                        ${escapeHtml(time)}
-                    </button>
-                `;
+                timeOptions += `<option value="${escapeHtml(time)}">${escapeHtml(time)}</option>`;
             });
 
-            timeHtml += `</div>`;
+            chatContent.innerHTML += `
+                <div class="ai-message">
+                    ⏰ Vui lòng chọn giờ khám
+                    (còn <strong>${res.free_times.length}</strong> khung giờ trống):<br><br>
 
-            chatContent.innerHTML += timeHtml;
+                    <select id="${timeSelectId}"
+                            style="padding: 7px; margin-bottom: 8px; min-width: 170px;">
+                        ${timeOptions}
+                    </select>
+
+                    <br>
+
+                    <button type="button"
+                            class="ai-booking-button"
+                            onclick="confirmBookingTime('${timeSelectId}')">
+                        Tiếp tục
+                    </button>
+                </div>
+            `;
 
         } else {
 
@@ -2026,6 +2238,18 @@ function confirmBookingDate() {
 
         chatContent.scrollTop = chatContent.scrollHeight;
     });
+}
+
+function confirmBookingTime(selectId) {
+
+    const timeSelect = document.getElementById(selectId);
+
+    if (!timeSelect || !timeSelect.value) {
+        alert('Vui lòng chọn giờ khám.');
+        return;
+    }
+
+    selectBookingTime(timeSelect.value);
 }
 
 function selectBookingTime(time) {
@@ -2164,6 +2388,176 @@ function confirmChatReservation() {
     });
 }
 
+// Số điện thoại Việt Nam: đúng 10 chữ số, bắt đầu bằng 0.
+// Chỉ cho phép số, khoảng trắng, dấu chấm, gạch ngang. Trả về chuỗi 10 số hoặc null.
+function normalizeChatPhone(raw) {
+    const value = String(raw).trim();
+    if (!/^[0-9 .\-]+$/.test(value)) {
+        return null;
+    }
+    const digits = value.replace(/\D/g, '');
+    return /^0\d{9}$/.test(digits) ? digits : null;
+}
+
+function startReservationLookup(mode) {
+
+    if (chatIsLoggedIn) {
+        fetchChatReservations(mode);
+        return;
+    }
+
+    reservationLookupMode = mode;
+
+    chatContent.innerHTML += `
+        <div class="ai-message">
+            📱 Vui lòng nhập <strong>số điện thoại</strong> bạn đã dùng khi đặt lịch khám.
+        </div>
+    `;
+
+    chatContent.scrollTop = chatContent.scrollHeight;
+}
+
+function fetchChatReservations(mode) {
+
+    const title = mode === 'cancel'
+        ? 'Các lịch khám có thể hủy:'
+        : 'Lịch khám sắp tới của bạn:';
+
+    chatContent.innerHTML += `
+        <div class="ai-message" id="reservation-lookup-loading">
+            ⏳ Đang kiểm tra lịch khám của bạn...
+        </div>
+    `;
+
+    chatContent.scrollTop = chatContent.scrollHeight;
+
+    fetch('{{ route("ai_chat_check_reservation") }}', {
+        method: 'POST',
+
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': '{{ csrf_token() }}'
+        },
+
+        body: JSON.stringify({
+            phone: reservationPhone
+        })
+    })
+
+    .then(response => response.json())
+
+    .then(res => {
+
+        const loading =
+            document.getElementById('reservation-lookup-loading');
+
+        if (loading) {
+            loading.remove();
+        }
+
+        if (res.status === true) {
+
+            let historyAnswer = title + '\n';
+            let reservationHtml = `
+                <div class="ai-message">
+                    📅 <strong>${title}</strong><br><br>
+            `;
+
+            res.reservations.forEach(reservation => {
+
+                const serviceName = reservation.service ? reservation.service.name : '';
+                const doctorName = reservation.doctor ? reservation.doctor.name : '';
+                const statusText = reservation.status == 0 ? 'Chờ xác nhận' : 'Đã xác nhận';
+
+                historyAnswer +=
+                    'Dịch vụ: ' + serviceName + '\n'
+                    + 'Bác sĩ: ' + doctorName + '\n'
+                    + 'Ngày: ' + reservation.date + '\n'
+                    + 'Giờ: ' + reservation.time + '\n'
+                    + 'Trạng thái: ' + statusText + '\n\n';
+
+                reservationHtml += `
+                    Dịch vụ:
+                    <strong>${escapeHtml(serviceName)}</strong><br>
+
+                    Bác sĩ:
+                    <strong>${escapeHtml(doctorName)}</strong><br>
+
+                    Ngày:
+                    <strong>${escapeHtml(reservation.date)}</strong><br>
+
+                    Giờ:
+                    <strong>${escapeHtml(reservation.time)}</strong><br>
+
+                    Trạng thái:
+                    <strong>${statusText}</strong><br><br>
+                `;
+
+                if (mode === 'cancel') {
+                    reservationHtml += `
+                        <button type="button"
+                                class="ai-booking-button"
+                                style="margin-bottom: 12px;"
+                                onclick="selectCancelReservation(${reservation.id})">
+                            ❌ Hủy lịch này
+                        </button>
+
+                        <br>
+                    `;
+                }
+            });
+
+            reservationHtml += `</div>`;
+
+            if (mode === 'check') {
+                saveChatHistory('Xem lịch khám của tôi', historyAnswer);
+            }
+
+            chatContent.innerHTML += reservationHtml;
+
+        } else {
+
+            if (res.need_phone) {
+                reservationLookupMode = mode;
+            }
+
+            if (!chatIsLoggedIn && !res.need_phone) {
+                res.message += ' Nếu bạn đặt lịch khi đã đăng nhập, vui lòng đăng nhập để xem.';
+            }
+
+            if (mode === 'check') {
+                saveChatHistory('Xem lịch khám của tôi', res.message);
+            }
+
+            chatContent.innerHTML += `
+                <div class="ai-message">
+                    ${escapeHtml(res.message)}
+                </div>
+            `;
+        }
+
+        chatContent.scrollTop = chatContent.scrollHeight;
+    })
+
+    .catch(() => {
+
+        const loading =
+            document.getElementById('reservation-lookup-loading');
+
+        if (loading) {
+            loading.remove();
+        }
+
+        chatContent.innerHTML += `
+            <div class="ai-message">
+                ❌ Không thể kiểm tra lịch khám. Vui lòng thử lại.
+            </div>
+        `;
+
+        chatContent.scrollTop = chatContent.scrollHeight;
+    });
+}
+
 function selectCancelReservation(id) {
 
     saveChatHistory(
@@ -2204,7 +2598,8 @@ function confirmCancelReservation(id) {
         },
 
         body: JSON.stringify({
-            reservation_id: id
+            reservation_id: id,
+            phone: reservationPhone
         })
     })
 
